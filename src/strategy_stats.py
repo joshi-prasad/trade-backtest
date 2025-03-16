@@ -222,7 +222,7 @@ class StrategyStats:
         """Calculate Sharpe ratio assuming risk-free rate of 2%"""
         if not self.trades:
             return 0
-        risk_free_rate = 2  # 2% annual
+        risk_free_rate = 6  # 6% annual
         excess_returns = [t.profit_pct - (risk_free_rate/252) for t in self.trades]  # daily adjustment
         if not excess_returns:
             return 0
