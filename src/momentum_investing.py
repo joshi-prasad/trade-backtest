@@ -5,6 +5,7 @@ from datetime import datetime
 
 class MomentumInvesting:
     def __init__(self, directory_path):
+        self.kWeeklyEMA = [2, 4, 10, 20, 30, 40]
         self.directory_path = directory_path
         self.all_stocks_data = {}
         self.combined_data = None
@@ -35,11 +36,9 @@ class MomentumInvesting:
         df['1M_Return'] = self.calculate_returns(df, 4)
         df['3M_Return'] = self.calculate_returns(df, 12)
         df['6M_Return'] = self.calculate_returns(df, 24)
-        # df['12M_Return'] = self.calculate_returns(df, 52)
 
-        # We are processing weekly data
-        # So, we will calculate the EMA for 2, 4, 10, 20, 30, 40 weeks
-        for ema in [2, 4, 10, 20, 30, 40]:
+        # Calculate EMAs
+        for ema in self.kWeeklyEMA:
             df[f'{ema}EMA'] = df['Close'].ewm(span=ema, adjust=False).mean()
 
         return df
@@ -59,9 +58,9 @@ class MomentumInvesting:
                 'Date')[period].rank(pct=True) * 100
 
         combined_df['RS_Rating'] = \
-            (0.35 * combined_df['1M_Rank']) + \
+            (0.42 * combined_df['1M_Rank']) + \
             (0.33 * combined_df['3M_Rank']) + \
-            (0.31 * combined_df['6M_Rank'])
+            (0.25 * combined_df['6M_Rank'])
         self.combined_data = combined_df
 
     def retrieve_available_weeks(self):
@@ -102,7 +101,7 @@ class MomentumInvesting:
 
         return {
             f'{ema}EMA': (latest_data['Close'] > latest_data[f'{ema}EMA']).sum()
-            for ema in [2, 4, 10, 20, 30, 40]
+            for ema in self.kWeeklyEMA
         }
 
     def initialize(self):
@@ -119,125 +118,6 @@ class MomentumInvesting:
         # Calculate percentile ranks and RS Rating
         self.calculate_percentile_ranks()
 
-    def backtest_strategy_equity_only(self):
-        available_weeks = self.retrieve_available_weeks()
-        assert available_weeks, "No data available for analysis."
-
-        capital = self.initial_capital
-        previous_available_capital = capital
-        portfolio = {}
-        trade_count = 0
-
-        # Iterate for each month
-        for week in available_weeks[::2]:
-            print(f"Processing week {week}...")
-            available_capital = previous_available_capital
-
-            # Get the top 10 stocks by RS Rating
-            top_stocks = self.top_stocks_by_rs_rating(week, top_n=10)
-            if top_stocks.empty:
-                continue
-
-            # Rebalanceing the portfolio
-
-            sold = []
-            # First iterate over the stocks to sell
-            for ticker, quantity in portfolio.items():
-                # Check if the stock is in the top 10
-                if ticker in top_stocks.index.get_level_values('Ticker'):
-                    continue
-                stock_value = self.stock_value_lookup(week, ticker)
-                assert stock_value is not None, "Stock value should not be None." + ticker
-                available_capital += quantity * stock_value
-                trade_count += 1
-                # Remove the stock from the portfolio
-                sold.append(ticker)
-            for ticker in sold:
-                del portfolio[ticker]
-
-            # Now check if a stock in portfolio has allocation more than 20%
-            # If yes, then bring allocation to 20%
-            for ticker, quantity in portfolio.items():
-                stock_value = self.stock_value_lookup(week, ticker)
-                # print(f"--> Stock Value = {stock_value}, Quantity = {quantity}, ticker = {ticker}")
-                if (quantity * stock_value) <= (capital * 0.2):
-                    continue
-                available_capital += quantity * stock_value - capital * 0.2
-                trade_count += 1
-                # update the portfolio with 20% allocation
-                portfolio[ticker] = capital * 0.2 // stock_value
-
-
-            # Now iterate over the top stocks to buy
-            count = 0
-            for ticker in top_stocks.index.get_level_values('Ticker'):
-                stock_value = self.stock_value_lookup(week, ticker)
-                if stock_value is None:
-                    assert False, "Stock value should not be None."
-                    continue
-
-                # # If the stock is already in the portfolio, carry it forward
-                # if ticker in portfolio:
-                #     continue
-
-                # Allocate equal capital to new stocks
-                allocation = available_capital / (len(top_stocks) - count)
-                quantity = allocation // stock_value
-                if quantity == 0 or quantity < 0:
-                    continue
-                # print(f"ZERO StockValue={stock_value}"
-                #     f",Quantity={quantity}"
-                #     f",ticker={ticker}"
-                #     f",available_capital={available_capital}"
-                #     f",allocation={allocation}")
-                # assert quantity > 0, "Quantity should be greater than 0."
-                if ticker in portfolio:
-                    portfolio[ticker] += quantity
-                else:
-                    portfolio[ticker] = quantity
-                available_capital -= quantity * stock_value
-                trade_count += 1
-                count += 1
-
-            previous_available_capital = available_capital
-
-            # Print current portfolio
-            print(f"\nPortfolio for week {week}:")
-            invested_capital = 0
-            for ticker, quantity in portfolio.items():
-                stock_value = self.stock_value_lookup(week, ticker)
-                assert stock_value is not None, "Stock value should not be None."
-                invested_capital += quantity * stock_value
-                print(f"{ticker}: {quantity} shares @ {stock_value} each")
-            print(f"Available Capital: {available_capital}")
-            print(f"Invested Capital: {invested_capital}")
-            print(f"Total Capital: {invested_capital + available_capital}")
-
-        # Liquidate portfolio at the end of the backtest
-        for ticker, quantity in portfolio.items():
-            stock_value = self.stock_value_lookup(available_weeks[-1], ticker)
-            if stock_value is not None:
-                capital += quantity * stock_value
-                trade_count += 1
-
-        # Calculate performance metrics
-        final_capital = capital + previous_available_capital
-        total_trades = trade_count
-        cagr = self.calculate_cagr(
-            self.initial_capital, final_capital, len(available_weeks))
-
-        print(f"\nBacktest Results:")
-        print(f"Initial Capital: {self.initial_capital}")
-        print(f"Final Capital: {final_capital}")
-        print(f"Total Trades: {total_trades}")
-        print(f"Total Investment Period: {len(available_weeks) // 52} years")
-        print(f"CAGR: {cagr}%")
-
-    def calculate_cagr(self, initial_investment, final_value, total_weeks):
-        years = total_weeks / 52
-        cagr = ((final_value / initial_investment) ** (1 / years) - 1) * 100
-        return cagr
-
     def backtest_asset_allocation(self):
         available_weeks = self.retrieve_available_weeks()
         assert available_weeks, "No data available for analysis."
@@ -247,178 +127,182 @@ class MomentumInvesting:
         invested_capital = 0
         portfolio = {}
         gold_invested_quantity = 0
-        trade_count = 0
         kTotalStocksInPortfolio = 10
 
         # Iterate for each month
         for week in available_weeks[::2]:
             print(f"\nProcessing week {week}...")
-            # Step 0: Compute total available capital for investment assuming
-            # we sold everything
-            for ticker, quantity in portfolio.items():
-                stock_value = self.stock_value_lookup(week, ticker)
-                available_cash += quantity * stock_value
-                trade_count += 1
-            portfolio = {}
-            # Step 0a: Update the gold investment value
-            gold_current_value = self.stock_value_lookup(week, 'GOLDBEES')
-            available_cash += (gold_invested_quantity * gold_current_value)
+            # Step 1: Assume all protfolio is sold and compute available cash
+            equity_cash = self.sell_all_stocks(week, portfolio, available_cash)
+            gold_cash = self.compute_gold_investment_value(
+                week, gold_invested_quantity)
+            available_cash = equity_cash + gold_cash
             gold_invested_quantity = 0
+            portfolio = {}
 
-            available_capital = available_cash
-
-            # Find total stocks above EMA
+            # Step 2: Check if total stocks above 20 week EMA to find strong,
+            # moderate or weak uptrend
             stocks_above_ema = self.stocks_above_ema(week)
             if not stocks_above_ema:
                 continue
-            # total stocks above 40 EMA
-            # 2, 4, 10, 20, 30, 40
-            above_200ema = stocks_above_ema.get('20EMA', 0)
-            if (above_200ema is None) or (above_200ema <= 0):
-                continue
-            assert above_200ema, "No stocks above 40EMA."
 
-            # Step 1: Get the top 10 stocks by RS Rating
-            top_stocks = self.top_stocks_by_rs_rating(week, top_n=kTotalStocksInPortfolio)
+            # Step 3: Check if total stocks above 20 week EMA
+            above_20ema = stocks_above_ema.get('20EMA', 0)
+            if (above_20ema is None) or (above_20ema <= 0):
+                continue
+            assert above_20ema, "No stocks above 20EMA."
+            percentage_equity_allocation, \
+                expected_equity_allocation, \
+                expected_gold_allocation = self.compute_allocation(
+                    above_20ema, available_cash)
+
+            # Step 4: Find top stocks by RS Rating
+            top_stocks = self.top_stocks_by_rs_rating(
+                week, top_n=kTotalStocksInPortfolio)
             if top_stocks.empty:
                 continue
 
-            # Step 2: Sell the lagging stocks
-            # Step 3: Compute the investment value
-            equity_investment_value = 0
-            sold = []
-            for ticker, quantity in portfolio.items():
-                stock_value = self.stock_value_lookup(week, ticker)
-
-                # Check if the stock is in the top 10
-                if ticker in top_stocks.index.get_level_values('Ticker'):
-                    equity_investment_value += quantity * stock_value
-                    continue
-                stock_value = self.stock_value_lookup(week, ticker)
-                available_capital += quantity * stock_value
-                trade_count += 1
-                # Remove the stock from the portfolio
-                sold.append(ticker)
-            for ticker in sold:
-                del portfolio[ticker]
-
-            # Step 3a: Find value of gold
+            # Step 5: Buy gold
             gold_current_value = self.stock_value_lookup(week, 'GOLDBEES')
+            gold_invested_quantity = \
+                expected_gold_allocation // gold_current_value
             gold_invested_value = gold_invested_quantity * gold_current_value
 
-            # Step 3b: Find total investment value
-            investment_value = \
-                equity_investment_value + \
-                gold_invested_value + \
-                available_capital
+            # Step 6: Rebalance equity portfolio
+            portfolio, available_cash = self.rebalance_equity_portfolio(
+                week, top_stocks, expected_equity_allocation)
 
-            # Step 4: Compute the allocation
-            if above_200ema >= 70:
-                # Allocate 70% to equity
-                percentage_equity_allocation = 80
-                expected_equity_allocation = 0.80 * investment_value
-                expected_gold_allocation = 0.20 * investment_value
-                print("Strong uptrend")
-            elif above_200ema >= 40:
-                # Allocate 50% to equity
-                percentage_equity_allocation = 50
-                expected_equity_allocation = 0.50 * investment_value
-                expected_gold_allocation = 0.50 * investment_value
-                print("Moderate uptrend")
-            else:
-                # Allocate 30% to equity
-                percentage_equity_allocation = 30
-                expected_equity_allocation = 0.30 * investment_value
-                expected_gold_allocation = 0.70 * investment_value
-                print("Weak uptrend")
+            # Step 7: Print portfolio
+            self.print_portfolio(
+                week,
+                portfolio,
+                available_cash,
+                gold_invested_quantity,
+                gold_current_value,
+                percentage_equity_allocation)
 
-            # Step 5: Rebalance the equity portfolio
-            allocation_per_stock = expected_equity_allocation / len(top_stocks)
-            # Step 5a: Sell stocks if allocation is more than 20%
-            equity_sold_value = 0
-            for ticker, quantity in portfolio.items():
-                stock_value = self.stock_value_lookup(week, ticker)
-                if (quantity * stock_value) <= (expected_equity_allocation * 0.20):
-                    continue
-                equity_sold_value += quantity * stock_value - expected_equity_allocation * 0.20
-                trade_count += 1
-                # update the portfolio with 20% allocation
-                portfolio[ticker] = expected_equity_allocation * 0.20 // stock_value
-            # Step 5b: Compute the available capital for equity investment
-            equity_investment_value -= equity_sold_value
-            available_capital_for_equity_investment = expected_equity_allocation - equity_investment_value
-            # Step 5c: Buy new stocks
-            if available_capital_for_equity_investment > 0:
-                print(len(top_stocks))
-                assert (len(top_stocks) >= kTotalStocksInPortfolio), "Too less stocks."
-                count = 0
-                for ticker in top_stocks.index.get_level_values('Ticker'):
-                    print(f"Available Capital for Equity Investment: {available_capital_for_equity_investment}, count: {count}")
-                    stock_value = self.stock_value_lookup(week, ticker)
-                    assert (stock_value is not None), "Stock value should not be None."
-                    # Allocate equal capital to new stocks
-                    allocation = available_capital_for_equity_investment / (len(top_stocks) - count)
-                    count += 1
-                    assert allocation > 0, "Allocation should be greater than 0."
-                    quantity = allocation // stock_value
-                    assert quantity > 0, "Quantity should be greater than 0."
-                    if ticker in portfolio:
-                        if portfolio[ticker] >= quantity:
-                            continue
-                        to_buy = quantity - portfolio[ticker]
-                        available_capital_for_equity_investment -= to_buy * stock_value
-                        portfolio[ticker] += to_buy
-                    else:
-                        portfolio[ticker] = quantity
-                        available_capital_for_equity_investment -= quantity * stock_value
-                print("Equity Portfolio = ", portfolio)
-                print(top_stocks)
-                assert (len(portfolio) >= kTotalStocksInPortfolio), "Too less stocks."
+        final_capital = self.liquidate_portfolio(
+            available_weeks, portfolio, gold_invested_quantity)
 
-            # Step 5d: Update the available cash
-            available_cash = available_capital_for_equity_investment
+        self.print_backtest_results(final_capital, 0, len(available_weeks))
 
-            # Step 6: Rebalance the gold portfolio
-            expected_gold_quantity = expected_gold_allocation // gold_current_value
-            gold_invested_quantity = expected_gold_quantity
+    def sell_all_stocks(self, week, portfolio, available_cash):
+        for ticker, quantity in portfolio.items():
+            stock_value = self.stock_value_lookup(week, ticker)
+            assert stock_value, f"No data available for {ticker} in week {week}."
+            available_cash += quantity * stock_value
+        return available_cash
 
-            # Print current portfolio
-            print(f"\nPortfolio for week {week}:")
-            print(f"Equity Allocation: {percentage_equity_allocation}% Gold Allocation: {100 - percentage_equity_allocation}%")
-            invested_capital = 0
-            assert len(portfolio) >= kTotalStocksInPortfolio, "Too less stocks."
-            for ticker, quantity in portfolio.items():
-                stock_value = self.stock_value_lookup(week, ticker)
-                assert (stock_value is not None), "Stock value should not be None."
-                invested_capital += quantity * stock_value
-                print(f"{ticker}: {quantity} shares @ {stock_value} each")
-            print(f"Available Capital: {available_cash}")
-            print(f"Equity Invested Capital: {invested_capital}")
-            print(f"Equity Total Capital: {invested_capital + available_cash}")
-            print(f"Gold: {gold_invested_quantity * gold_current_value}")
-            print(f"Total Capital: {invested_capital + available_cash + gold_invested_quantity * gold_current_value}")
+    def compute_gold_investment_value(self, week, gold_invested_quantity):
+        gold_current_value = self.stock_value_lookup(week, 'GOLDBEES')
+        assert gold_current_value, f"No data available for GOLDBEES in week {week}."
+        return gold_invested_quantity * gold_current_value
 
-        # Liquidate portfolio at the end of the backtest
+    def rebalance_portfolio(self, week, top_stocks, portfolio, available_cash):
+        equity_investment_value = 0
+        sold = []
+        for ticker, quantity in portfolio.items():
+            stock_value = self.stock_value_lookup(week, ticker)
+            if ticker in top_stocks.index.get_level_values('Ticker'):
+                equity_investment_value += quantity * stock_value
+                continue
+            available_cash += quantity * stock_value
+            sold.append(ticker)
+        for ticker in sold:
+            del portfolio[ticker]
+        return equity_investment_value, available_cash, portfolio
+
+    def compute_allocation(self, above_20ema, investment_value):
+        if above_20ema >= 70:
+            percentage_equity_allocation = 80
+            expected_equity_allocation = 0.80 * investment_value
+            expected_gold_allocation = 0.20 * investment_value
+            print("Trend: Strong uptrend")
+        elif above_20ema >= 40:
+            percentage_equity_allocation = 50
+            expected_equity_allocation = 0.50 * investment_value
+            expected_gold_allocation = 0.50 * investment_value
+            print("Trend: Moderate uptrend")
+        else:
+            percentage_equity_allocation = 30
+            expected_equity_allocation = 0.30 * investment_value
+            expected_gold_allocation = 0.70 * investment_value
+            print("Trend: Weak uptrend")
+        return percentage_equity_allocation, \
+            expected_equity_allocation, \
+            expected_gold_allocation
+
+    def rebalance_equity_portfolio(
+        self, week, top_stocks, expected_equity_allocation):
+
+        portfolio = {}
+        available_capital_for_equity_investment = expected_equity_allocation
+        count = 0
+        for ticker in top_stocks.index.get_level_values('Ticker'):
+            stock_value = self.stock_value_lookup(week, ticker)
+            assert stock_value, f"No data available for {ticker} in week {week}."
+            allocation = available_capital_for_equity_investment / (len(top_stocks) - count)
+            quantity = allocation // stock_value
+            assert quantity, f"Quantity for {ticker} is 0."
+            portfolio[ticker] = quantity
+            available_capital_for_equity_investment -= quantity * stock_value
+            count += 1
+        available_cash = available_capital_for_equity_investment
+        return portfolio, available_cash
+
+    def rebalance_gold_portfolio(
+            self, expected_gold_allocation, gold_current_value):
+        expected_gold_quantity = expected_gold_allocation // gold_current_value
+        return expected_gold_quantity
+
+    def print_portfolio(
+        self,
+        week,
+        portfolio,
+        available_cash,
+        gold_invested_quantity,
+        gold_current_value,
+        percentage_equity_allocation):
+
+        print(f"\nPortfolio for week {week}:")
+        print(f"Equity Allocation: {percentage_equity_allocation}% Gold Allocation: {100 - percentage_equity_allocation}%")
+        invested_capital = 0
+        total_stocks = len(portfolio)
+        for ticker, quantity in portfolio.items():
+            stock_value = self.stock_value_lookup(week, ticker)
+            assert stock_value, f"No data available for {ticker} in week {week}."
+            invested_capital += quantity * stock_value
+            print(f"{ticker}: {100/total_stocks:2.0f}% of portfolio @ {stock_value} each")
+        # print(f"Available Cash: {available_cash:.1f}")
+        # print(f"Equity Invested Capital: {invested_capital:.1f}")
+        # print(f"Equity Total Capital: {invested_capital + available_cash:.1f}")
+        # print(f"Gold Investment: {gold_invested_quantity * gold_current_value:.1f}")
+        # print(f"Total Capital: {invested_capital + available_cash + gold_invested_quantity * gold_current_value:.1f}")
+
+    def liquidate_portfolio(self, available_weeks, portfolio, gold_invested_quantity):
         final_capital = 0
         for ticker, quantity in portfolio.items():
             stock_value = self.stock_value_lookup(available_weeks[-1], ticker)
             if stock_value is not None:
                 final_capital += (quantity * stock_value)
-                trade_count += 1
         final_capital += (self.stock_value_lookup(available_weeks[-1], 'GOLDBEES') * gold_invested_quantity)
-        trade_count += 1
+        return final_capital
 
-        # Calculate performance metrics
+    def print_backtest_results(self, final_capital, trade_count, total_weeks):
         total_trades = trade_count
         cagr = self.calculate_cagr(
-            self.initial_capital, final_capital, len(available_weeks))
-
+            self.initial_capital, final_capital, total_weeks)
         print(f"\nBacktest Results:")
-        print(f"Initial Capital: {self.initial_capital}")
-        print(f"Final Capital: {final_capital}")
+        print(f"Initial Capital: {self.initial_capital:.1f}")
+        print(f"Final Capital: {final_capital:.1f}")
         print(f"Total Trades: {total_trades}")
-        print(f"Total Investment Period: {len(available_weeks) // 52} years")
-        print(f"CAGR: {cagr}%")
+        print(f"Total Investment Period: {total_weeks // 52} years")
+        print(f"CAGR: {cagr:.2f}%")
+
+    def calculate_cagr(self, initial_investment, final_value, total_weeks):
+        years = total_weeks / 52
+        cagr = ((final_value / initial_investment) ** (1 / years) - 1) * 100
+        return cagr
 
 
 # Example usage
