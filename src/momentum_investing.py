@@ -36,10 +36,17 @@ class MomentumInvesting:
         df['1M_Return'] = self.calculate_returns(df, 4)
         df['3M_Return'] = self.calculate_returns(df, 12)
         df['6M_Return'] = self.calculate_returns(df, 24)
+        df['12M_Return'] = self.calculate_returns(df, 52)
 
         # Calculate EMAs
         for ema in self.kWeeklyEMA:
             df[f'{ema}EMA'] = df['Close'].ewm(span=ema, adjust=False).mean()
+
+        # Calculate rally percentages
+        df['Rallied_60_12W'] = df['Close'].pct_change(periods=12) >= 0.60
+        df['Rallied_30_6W'] = df['Close'].pct_change(periods=6) >= 0.30
+        df['Rallied_15_3W'] = df['Close'].pct_change(periods=3) >= 0.15
+        df['Rallied_10_2W'] = df['Close'].pct_change(periods=2) >= 0.10
 
         return df
 
@@ -53,15 +60,33 @@ class MomentumInvesting:
             keys=self.all_stocks_data.keys(),
             names=['Ticker', 'Date'])
 
-        for period in ['1M_Return', '3M_Return', '6M_Return']:
+        for period in ['1M_Return', '3M_Return', '6M_Return', '12M_Return']:
             combined_df[f'{period[:-7]}_Rank'] = combined_df.groupby(
                 'Date')[period].rank(pct=True) * 100
 
+        # 1 Month: 28%, 3 Month: 26%, 6 Month: 24%, 12 Month: 22%
         combined_df['RS_Rating'] = \
-            (0.42 * combined_df['1M_Rank']) + \
-            (0.33 * combined_df['3M_Rank']) + \
-            (0.25 * combined_df['6M_Rank'])
+            (0.28 * combined_df['1M_Rank']) + \
+            (0.26 * combined_df['3M_Rank']) + \
+            (0.24 * combined_df['6M_Rank']) + \
+            (0.22 * combined_df['12M_Rank'])
         self.combined_data = combined_df
+
+    def calculate_rally_percentages(self):
+        if self.combined_data is None:
+            print("No data available for analysis.")
+            return {}
+
+        total_stocks = len(self.all_stocks_data)
+
+        latest_data = self.combined_data.groupby('Date').apply(lambda x: pd.Series({
+            'Rallied_60_12W': (x['Rallied_60_12W'].sum() / total_stocks) * 100,
+            'Rallied_30_6W': (x['Rallied_30_6W'].sum() / total_stocks) * 100,
+            'Rallied_15_3W': (x['Rallied_15_3W'].sum() / total_stocks) * 100,
+            'Rallied_10_2W': (x['Rallied_10_2W'].sum() / total_stocks) * 100
+        }))
+
+        return latest_data
 
     def retrieve_available_weeks(self):
         if self.combined_data is None:
